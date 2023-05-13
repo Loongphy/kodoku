@@ -3,17 +3,22 @@
 import { useAtom } from "jotai"
 import { useHydrateAtoms } from "jotai/utils"
 
-import { capitalize } from "@/lib/utils"
 import { Checkbox } from "@/components/ui/checkbox"
+import { capitalize } from "@/lib/utils"
 
 import { selectedTypeAtom } from "./state"
 
-export default function GithubTimelineFilter({
+export default function TimelineFilter({
 	filters: filtersFromServer,
 }: {
 	filters: string[]
 }) {
-	useHydrateAtoms([[selectedTypeAtom, filtersFromServer] as const])
+	useHydrateAtoms([
+		[
+			selectedTypeAtom,
+			filtersFromServer.filter((i) => i !== "GitHub"),
+		] as const,
+	])
 	const [selectedType, setSelectedType] = useAtom(selectedTypeAtom)
 
 	return (

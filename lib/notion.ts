@@ -13,6 +13,7 @@ const { timeZone } = siteConfig
 
 const notionToken = process.env.NOTION_TOKEN!
 const feedId = process.env.NOTION_FEED_ID!
+const RSSHubUrl = process.env.RSSHUB_URL ?? "https://rsshub.app"
 
 const headers = {
 	Accept: "application/json",
@@ -21,8 +22,6 @@ const headers = {
 	Authorization: `Bearer ${notionToken}`,
 }
 
-const revalidate = 7200
-
 async function getDatabaseItems(databaseId: string) {
 	try {
 		const response = (await fetch(
@@ -30,9 +29,6 @@ async function getDatabaseItems(databaseId: string) {
 			{
 				method: "POST",
 				headers,
-				next: {
-					revalidate,
-				},
 			}
 		).then((i) => i.json())) as QueryDatabaseResponse
 
@@ -123,32 +119,87 @@ export async function getFilters(
 	return [typeFilter, languageFilter] as const
 }
 
-export async function getGithubTimeline() {
+const VALID_RSS_LINK_PATTERNS = [
+	[
+		/https:\/\/www\.youtube\.com\/channel\/(\w+)$/,
+		`${RSSHubUrl}/youtube/channel/$1`,
+		"YouTube",
+	],
+	[/https:\/\/github\.com\/(\w+)$/, "https://github.com/$1.atom", "GitHub"],
+	[
+		/https:\/\/space.bilibili.com\/(\d+)$/,
+		`${RSSHubUrl}/bilibili/user/dynamic/$1`,
+		"Bilibili",
+	],
+	[/https:\/\/twitter\.com\/(\w+)$/, `${RSSHubUrl}/twitter/user/$1`, "Twitter"],
+] as const
+
+function generateValidRSSLink(
+	originalLink: string,
+	matchPattern: RegExp,
+	replacePattern: string
+): string | undefined {
+	if (
+		typeof originalLink === "string" &&
+		originalLink.length !== 0 &&
+		originalLink.match(matchPattern)
+	) {
+		return originalLink.replace(matchPattern, replacePattern)
+	}
+}
+
+export async function getTimeline() {
 	const feedInfoList = await getFeedInfoList()
 	if (!feedInfoList) return
 
-	const githubFeedInfoList = feedInfoList
-		.filter((i) => i.socials.some((j) => j?.includes("github.com")))
+	const RSSList = feedInfoList
 		.map((i) => {
 			return {
 				...i,
-				feedUrl:
-					(i.socials.find((j) => j?.includes("github.com")) ?? "") + ".atom",
+				socials: i.socials
+					.map((j) => {
+						for (const [
+							matchPattern,
+							replacePattern,
+							type,
+						] of VALID_RSS_LINK_PATTERNS) {
+							const validRSSLink = generateValidRSSLink(
+								j,
+								matchPattern,
+								replacePattern
+							)
+							if (validRSSLink) {
+								return [validRSSLink, type]
+							}
+						}
+					})
+					.filter((j) => j),
 			}
 		})
-		.filter((i) => i.feedUrl.match(/https:\/\/github.com\/\w+.atom/g))
+		.map((i) => {
+			return [
+				...i.socials.map((j) => {
+					return {
+						...i,
+						feedUrl: j![0],
+						type: j![1],
+					}
+				}),
+			]
+		})
+		.flat()
 
-	// id: tag:github.com,2008:PushEvent/28747740914
-	const res = await getFeedList(githubFeedInfoList, "all", "all", false)
-
+	const res = await getFeedList(RSSList, "all", "all", false)
 	return res?.map((i) => {
-		return {
-			...i,
-			feedInfo: {
-				...i.feedInfo,
-				type: i.id?.split("/")[0].split(":")[2].slice(0, -5) ?? "unknown",
-			},
+		if (i.feedInfo.type === "GitHub") {
+			const regex = /<a.*href="(\S+)".*>(.+)<\/a>/gm
+			const removeClassRegex = /(class=".*?")/gm
+			const str = i.content ?? ""
+			const subst = `<a href="https://github.com$1" target="_blank" rel="noreferrer">$2</a>`
+			const result = str.replace(regex, subst).replace(removeClassRegex, "")
+			i.content = result
 		}
+		return i
 	})
 }
 
@@ -168,7 +219,7 @@ export async function getFeedList(
 					const feed = await parseRssFeed(i.feedUrl)
 					if (!feed) return []
 					return feed.items
-						.filter(isFeedItemValid)
+						.filter((j) => isFeedItemValid(j, i))
 						.map((j) => {
 							return {
 								...j,
@@ -230,10 +281,6 @@ export async function getFeedList(
 					.slice(0, numberOfFeedSent)
 			: feedList
 					.flat()
-					.filter((i) => {
-						// only today's feed
-						return dayjs(i.isoDate).tz(timeZone).isSame(dayjs(), "day")
-					})
 					.sort((a, b) => {
 						if (a.isoDate && b.isoDate) {
 							return (
@@ -242,8 +289,8 @@ export async function getFeedList(
 						}
 						return 0
 					})
-					// max 200 feeds
-					.slice(0, 200)
+					// max 100 feeds
+					.slice(0, 100)
 	} catch (e) {
 		console.error("getFeedList", e)
 	}
